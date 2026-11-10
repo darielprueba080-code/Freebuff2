@@ -143,6 +143,8 @@
 
     canvas#game {
       display: block;
+      width: 320px;
+      max-width: 86vw;
       width: min(86vw, calc(74vh * 2 / 3), 420px);
       height: auto;
       aspect-ratio: 200 / 300;
@@ -154,6 +156,23 @@
       border-radius: 2px;
       cursor: pointer;
       touch-action: none;
+      outline: none;
+    }
+
+    .js-fallback {
+      position: absolute;
+      inset: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 16px;
+      background: rgba(12, 16, 32, 0.94);
+      color: #ffd93d;
+      font-size: 13px;
+      line-height: 1.5;
+      border-radius: 2px;
+      z-index: 5;
     }
 
     .crt-overlay {
@@ -374,26 +393,31 @@
           PIXEL TURBO 86
         </div>
         <div class="top-actions">
-          <button id="btn-crt" class="pixel-btn active" title="Filtro retro CRT">CRT: ON</button>
-          <button id="btn-sound" class="pixel-btn active" title="Activar o silenciar sonido (M)">AUDIO: ON</button>
-          <button id="btn-pause" class="pixel-btn" title="Pausar partida (P)">PAUSA</button>
+          <button id="btn-play" class="pixel-btn" tabindex="-1" title="Iniciar o reiniciar partida">JUGAR</button>
+          <button id="btn-crt" class="pixel-btn active" tabindex="-1" title="Filtro retro CRT">CRT: ON</button>
+          <button id="btn-sound" class="pixel-btn active" tabindex="-1" title="Activar o silenciar sonido (M)">AUDIO: ON</button>
+          <button id="btn-pause" class="pixel-btn" tabindex="-1" title="Pausar partida (P)">PAUSA</button>
         </div>
       </div>
 
       <div class="screen-bezel">
-        <canvas id="game" width="200" height="300"></canvas>
+        <canvas id="game" width="200" height="300" tabindex="0"></canvas>
+        <div id="js-fallback" class="js-fallback">
+          Cargando PIXEL TURBO 86...<br /><br />
+          Si ves este mensaje, este visor bloquea JavaScript. Abre <strong>index.html</strong> en un navegador web o usa la Vista Previa en vivo.
+        </div>
         <div id="crt-overlay" class="crt-overlay on"></div>
       </div>
 
       <div class="touch-deck" aria-label="Controles táctiles">
         <div class="pad-group">
-          <button class="ctrl-btn" data-key="left" aria-label="Izquierda">◀</button>
-          <button class="ctrl-btn" data-key="right" aria-label="Derecha">▶</button>
+          <button class="ctrl-btn" data-key="left" tabindex="-1" aria-label="Izquierda">◀</button>
+          <button class="ctrl-btn" data-key="right" tabindex="-1" aria-label="Derecha">▶</button>
         </div>
         <div class="pad-group">
-          <button class="ctrl-btn nitro-btn" data-key="nitro" aria-label="Nitro">NITRO</button>
-          <button class="ctrl-btn brake-btn" data-key="down" aria-label="Frenar">FRENO</button>
-          <button class="ctrl-btn gas-btn" data-key="up" aria-label="Acelerar">GAS</button>
+          <button class="ctrl-btn nitro-btn" data-key="nitro" tabindex="-1" aria-label="Nitro">NITRO</button>
+          <button class="ctrl-btn brake-btn" data-key="down" tabindex="-1" aria-label="Frenar">FRENO</button>
+          <button class="ctrl-btn gas-btn" data-key="up" tabindex="-1" aria-label="Acelerar">GAS</button>
         </div>
       </div>
     </main>
@@ -456,17 +480,31 @@
         ROAD_LEFT + LANE_W * 3.5, // 151
       ];
 
+      const jsFallback = document.getElementById("js-fallback");
+      if (jsFallback) jsFallback.style.display = "none";
+
       const canvas = document.getElementById("game");
-      const ctx = canvas.getContext("2d", { alpha: false });
+      const ctx = canvas.getContext("2d", { alpha: false }) || canvas.getContext("2d");
       ctx.imageSmoothingEnabled = false;
+      ctx.webkitImageSmoothingEnabled = false;
+      ctx.mozImageSmoothingEnabled = false;
 
       // UI DOM
       const uiHighscore = document.getElementById("ui-highscore");
       const uiBestZone = document.getElementById("ui-bestzone");
+      const btnPlay = document.getElementById("btn-play");
       const btnCrt = document.getElementById("btn-crt");
       const btnSound = document.getElementById("btn-sound");
       const btnPause = document.getElementById("btn-pause");
       const crtOverlay = document.getElementById("crt-overlay");
+
+      function focusGameCanvas() {
+        try {
+          if (canvas && typeof canvas.focus === "function") {
+            canvas.focus({ preventScroll: true });
+          }
+        } catch (_) {}
+      }
 
       // ============================================================
       // 2. PERSISTENCIA SEGURA (localStorage)
@@ -1258,15 +1296,23 @@
 
         ensureCtx() {
           if (!this.enabled) return null;
-          if (!this.ctx) {
-            const AC = window.AudioContext || window.webkitAudioContext;
-            if (!AC) return null;
-            this.ctx = new AC();
+          try {
+            if (!this.ctx) {
+              const AC = window.AudioContext || window.webkitAudioContext;
+              if (!AC) return null;
+              this.ctx = new AC();
+            }
+            if (this.ctx && this.ctx.state === "suspended" && typeof this.ctx.resume === "function") {
+              const res = this.ctx.resume();
+              if (res && typeof res.catch === "function") {
+                res.catch(() => {});
+              }
+            }
+            return this.ctx;
+          } catch (_) {
+            this.ctx = null;
+            return null;
           }
-          if (this.ctx.state === "suspended") {
-            this.ctx.resume().catch(() => {});
-          }
-          return this.ctx;
         }
 
         startEngine() {
@@ -1294,58 +1340,66 @@
 
         updateEngine(speedRatio, active, nitroActive) {
           if (!this.engineOsc || !this.engineGain || !this.ctx) return;
-          const now = this.ctx.currentTime;
-          if (!this.enabled || !active) {
-            this.engineGain.gain.setTargetAtTime(0, now, 0.05);
-            return;
-          }
-          const freq = 46 + speedRatio * 74 + (nitroActive ? 35 : 0);
-          this.engineOsc.frequency.setTargetAtTime(freq, now, 0.05);
-          this.engineGain.gain.setTargetAtTime(nitroActive ? 0.032 : 0.018, now, 0.06);
+          try {
+            const now = this.ctx.currentTime;
+            if (!this.enabled || !active) {
+              this.engineGain.gain.setTargetAtTime(0, now, 0.05);
+              return;
+            }
+            const freq = 46 + speedRatio * 74 + (nitroActive ? 35 : 0);
+            this.engineOsc.frequency.setTargetAtTime(freq, now, 0.05);
+            this.engineGain.gain.setTargetAtTime(nitroActive ? 0.032 : 0.018, now, 0.06);
+          } catch (_) {}
         }
 
         stopEngine() {
-          if (this.engineGain && this.ctx) {
-            this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.03);
-          }
+          try {
+            if (this.engineGain && this.ctx) {
+              this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.03);
+            }
+          } catch (_) {}
         }
 
         tone(freq, dur, type = "square", vol = 0.08, slideTo = null, delay = 0) {
           const ac = this.ensureCtx();
           if (!ac) return;
-          const t = ac.currentTime + delay;
-          const osc = ac.createOscillator();
-          const gain = ac.createGain();
-          osc.type = type;
-          osc.frequency.setValueAtTime(freq, t);
-          if (slideTo !== null) {
-            osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
-          }
-          gain.gain.setValueAtTime(vol, t);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-          osc.connect(gain);
-          gain.connect(ac.destination);
-          osc.start(t);
-          osc.stop(t + dur + 0.02);
+          try {
+            const t = ac.currentTime + delay;
+            const osc = ac.createOscillator();
+            const gain = ac.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, t);
+            if (slideTo !== null) {
+              osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t + dur);
+            }
+            gain.gain.setValueAtTime(vol, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+            osc.connect(gain);
+            gain.connect(ac.destination);
+            osc.start(t);
+            osc.stop(t + dur + 0.02);
+          } catch (_) {}
         }
 
         noise(dur, vol = 0.12) {
           const ac = this.ensureCtx();
           if (!ac) return;
-          const bufferSize = Math.floor(ac.sampleRate * dur);
-          const buffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
-          const data = buffer.getChannelData(0);
-          for (let i = 0; i < bufferSize; i++) {
-            data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
-          }
-          const src = ac.createBufferSource();
-          src.buffer = buffer;
-          const gain = ac.createGain();
-          gain.gain.setValueAtTime(vol, ac.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
-          src.connect(gain);
-          gain.connect(ac.destination);
-          src.start();
+          try {
+            const bufferSize = Math.max(1, Math.floor(ac.sampleRate * dur));
+            const buffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) {
+              data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+            }
+            const src = ac.createBufferSource();
+            src.buffer = buffer;
+            const gain = ac.createGain();
+            gain.gain.setValueAtTime(vol, ac.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+            src.connect(gain);
+            gain.connect(ac.destination);
+            src.start();
+          } catch (_) {}
         }
 
         playSelect() {
@@ -2665,66 +2719,87 @@
         btnCrt.classList.toggle("active", on);
       }
 
-      btnCrt.addEventListener("click", () => { toggleCrt(); btnCrt.blur(); });
-      btnSound.addEventListener("click", () => { toggleAudio(); btnSound.blur(); });
-      btnPause.addEventListener("click", () => { togglePause(); btnPause.blur(); });
+      btnPlay.addEventListener("click", () => {
+        startGame();
+        btnPlay.blur();
+        focusGameCanvas();
+      });
+      btnCrt.addEventListener("click", () => { toggleCrt(); btnCrt.blur(); focusGameCanvas(); });
+      btnSound.addEventListener("click", () => { toggleAudio(); btnSound.blur(); focusGameCanvas(); });
+      btnPause.addEventListener("click", () => { togglePause(); btnPause.blur(); focusGameCanvas(); });
+
+      function mapKeyEvent(e) {
+        const code = e.code || "";
+        const key = e.key || "";
+        if (code === "ArrowLeft" || code === "KeyA" || key === "ArrowLeft" || key === "Left" || key === "a" || key === "A") return "left";
+        if (code === "ArrowRight" || code === "KeyD" || key === "ArrowRight" || key === "Right" || key === "d" || key === "D") return "right";
+        if (code === "ArrowUp" || code === "KeyW" || key === "ArrowUp" || key === "Up" || key === "w" || key === "W") return "up";
+        if (code === "ArrowDown" || code === "KeyS" || key === "ArrowDown" || key === "Down" || key === "s" || key === "S") return "down";
+        if (code === "Space" || code === "ShiftLeft" || code === "ShiftRight" || key === " " || key === "Spacebar" || key === "Shift") return "nitro";
+        if (code === "Enter" || key === "Enter") return "enter";
+        if (code === "Escape" || key === "Escape" || key === "Esc") return "esc";
+        if (code === "KeyP" || key === "p" || key === "P") return "pause";
+        if (code === "KeyM" || key === "m" || key === "M") return "mute";
+        if (code === "KeyR" || key === "r" || key === "R") return "restart";
+        return null;
+      }
 
       function handleKeyDown(e) {
-        const code = e.code;
-        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"].includes(code)) {
+        const action = mapKeyEvent(e);
+        if (action && ["left", "right", "up", "down", "nitro"].includes(action)) {
           e.preventDefault();
         }
 
         if (gameState === STATE.TITLE) {
-          if (code === "ArrowLeft" || code === "KeyA") {
+          if (action === "left") {
             selectedCarIdx = (selectedCarIdx + PLAYER_CARS.length - 1) % PLAYER_CARS.length;
             audio.playSelect();
-          } else if (code === "ArrowRight" || code === "KeyD") {
+          } else if (action === "right") {
             selectedCarIdx = (selectedCarIdx + 1) % PLAYER_CARS.length;
             audio.playSelect();
-          } else if (code === "Enter" || code === "Space") {
+          } else if (action === "enter" || action === "nitro") {
             startGame();
           }
           return;
         }
 
         if (gameState === STATE.GAMEOVER) {
-          if (code === "Enter" || code === "Space") {
+          if (action === "enter" || action === "nitro") {
             startGame();
-          } else if (code === "Escape") {
+          } else if (action === "esc") {
             gameState = STATE.TITLE;
             audio.playSelect();
           }
           return;
         }
 
-        if (code === "KeyP" || code === "Escape") {
+        if (action === "pause" || action === "esc") {
           togglePause();
           return;
         }
-        if (code === "KeyM") {
+        if (action === "mute") {
           toggleAudio();
           return;
         }
-        if (code === "KeyR" && gameState === STATE.PAUSED) {
+        if (action === "restart" && gameState === STATE.PAUSED) {
           startGame();
           return;
         }
 
-        if (code === "ArrowLeft" || code === "KeyA") input.left = true;
-        if (code === "ArrowRight" || code === "KeyD") input.right = true;
-        if (code === "ArrowUp" || code === "KeyW") input.up = true;
-        if (code === "ArrowDown" || code === "KeyS") input.down = true;
-        if (code === "Space" || code === "ShiftLeft" || code === "ShiftRight") input.nitro = true;
+        if (action === "left") input.left = true;
+        if (action === "right") input.right = true;
+        if (action === "up") input.up = true;
+        if (action === "down") input.down = true;
+        if (action === "nitro") input.nitro = true;
       }
 
       function handleKeyUp(e) {
-        const code = e.code;
-        if (code === "ArrowLeft" || code === "KeyA") input.left = false;
-        if (code === "ArrowRight" || code === "KeyD") input.right = false;
-        if (code === "ArrowUp" || code === "KeyW") input.up = false;
-        if (code === "ArrowDown" || code === "KeyS") input.down = false;
-        if (code === "Space" || code === "ShiftLeft" || code === "ShiftRight") input.nitro = false;
+        const action = mapKeyEvent(e);
+        if (action === "left") input.left = false;
+        if (action === "right") input.right = false;
+        if (action === "up") input.up = false;
+        if (action === "down") input.down = false;
+        if (action === "nitro") input.nitro = false;
       }
 
       window.addEventListener("keydown", handleKeyDown);
@@ -2733,11 +2808,24 @@
         input.left = input.right = input.up = input.down = input.nitro = false;
       });
 
-      // Clic / toque directo sobre el canvas (menús y dirección opcional por lado)
-      canvas.addEventListener("pointerdown", (e) => {
+      // Clic / toque directo sobre el canvas (menús y giro táctil directo sobre la vía)
+      let canvasSteerSide = null;
+      function getCanvasCoords(ev) {
         const rect = canvas.getBoundingClientRect();
-        const cx = ((e.clientX - rect.left) / rect.width) * W;
-        const cy = ((e.clientY - rect.top) / rect.height) * H;
+        const clientX = ev.touches && ev.touches[0] ? ev.touches[0].clientX : ev.clientX;
+        const clientY = ev.touches && ev.touches[0] ? ev.touches[0].clientY : ev.clientY;
+        const w = rect.width || W;
+        const h = rect.height || H;
+        return {
+          cx: ((clientX - rect.left) / w) * W,
+          cy: ((clientY - rect.top) / h) * H,
+        };
+      }
+
+      function onCanvasPress(ev) {
+        if (ev.cancelable) ev.preventDefault();
+        focusGameCanvas();
+        const { cx, cy } = getCanvasCoords(ev);
 
         if (gameState === STATE.TITLE) {
           if (cy >= 80 && cy <= 210 && cx < 64) {
@@ -2759,14 +2847,41 @@
 
         if (gameState === STATE.PAUSED) {
           togglePause();
+          return;
         }
-      });
+
+        if (gameState === STATE.PLAYING) {
+          canvasSteerSide = cx < W / 2 ? "left" : "right";
+          input.left = canvasSteerSide === "left";
+          input.right = canvasSteerSide === "right";
+        }
+      }
+
+      function onCanvasRelease() {
+        if (canvasSteerSide) {
+          input.left = false;
+          input.right = false;
+          canvasSteerSide = null;
+        }
+      }
+
+      if (window.PointerEvent) {
+        canvas.addEventListener("pointerdown", onCanvasPress);
+        window.addEventListener("pointerup", onCanvasRelease);
+        window.addEventListener("pointercancel", onCanvasRelease);
+      } else {
+        canvas.addEventListener("mousedown", onCanvasPress);
+        canvas.addEventListener("touchstart", onCanvasPress, { passive: false });
+        window.addEventListener("mouseup", onCanvasRelease);
+        window.addEventListener("touchend", onCanvasRelease);
+      }
 
       // Botones táctiles / ratón del tablero arcade
       document.querySelectorAll(".ctrl-btn").forEach((btn) => {
         const key = btn.dataset.key;
         const press = (ev) => {
-          ev.preventDefault();
+          if (ev.cancelable) ev.preventDefault();
+          focusGameCanvas();
           btn.classList.add("pressed");
           if (gameState === STATE.TITLE) {
             if (key === "left") {
@@ -2787,28 +2902,51 @@
           input[key] = true;
         };
         const release = (ev) => {
-          ev.preventDefault();
+          if (ev && ev.cancelable) ev.preventDefault();
           btn.classList.remove("pressed");
           input[key] = false;
         };
-        btn.addEventListener("pointerdown", press);
-        btn.addEventListener("pointerup", release);
-        btn.addEventListener("pointercancel", release);
-        btn.addEventListener("pointerleave", release);
+        if (window.PointerEvent) {
+          btn.addEventListener("pointerdown", press);
+          btn.addEventListener("pointerup", release);
+          btn.addEventListener("pointercancel", release);
+          btn.addEventListener("pointerleave", release);
+        } else {
+          btn.addEventListener("mousedown", press);
+          btn.addEventListener("touchstart", press, { passive: false });
+          btn.addEventListener("mouseup", release);
+          btn.addEventListener("mouseleave", release);
+          btn.addEventListener("touchend", release);
+        }
       });
 
       // ============================================================
       // 13. BUCLE PRINCIPAL (60 FPS)
       // ============================================================
-      let lastTime = performance.now();
+      let lastTime = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+      const raf = window.requestAnimationFrame
+        ? window.requestAnimationFrame.bind(window)
+        : (cb) => setTimeout(() => cb(Date.now()), 16);
+
       function loop(now) {
-        const dt = Math.min(0.05, (now - lastTime) / 1000);
-        lastTime = now;
-        update(dt);
-        render();
-        requestAnimationFrame(loop);
+        try {
+          const ts = typeof now === "number" ? now : Date.now();
+          const dt = Math.max(0, Math.min(0.05, (ts - lastTime) / 1000));
+          lastTime = ts;
+          update(dt);
+          render();
+        } catch (err) {
+          if (jsFallback) {
+            jsFallback.textContent = "Error ejecutando el juego: " + (err && err.message ? err.message : String(err));
+            jsFallback.style.display = "flex";
+          }
+          return;
+        }
+        raf(loop);
       }
-      requestAnimationFrame(loop);
+
+      render();
+      raf(loop);
     })();
   </script>
 </body>
